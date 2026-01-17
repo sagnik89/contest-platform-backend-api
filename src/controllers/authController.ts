@@ -1,16 +1,12 @@
 import { RequestHandler } from "express";
-import { z } from "zod";
+import bcrypt from "bcryptjs";
+import jwt, { SignOptions } from "jsonwebtoken"
+import "dotenv/config"
+
 import { createUser, findUserByEmail } from "../db/dbHelper.js";
 import { error_codes } from "../utils/error_codes.js";
+import { loginSchema, signupSchema } from "../utils/zod_schemas.js";
 
-
-// zod schema
-const signupSchema = z.object({
-  name: z.string(),
-  email: z.email(),
-  password: z.string(),
-  role: z.enum(["contestee", "creator"]).optional(),
-});
 
 
 // user signup controller
@@ -43,6 +39,10 @@ export const userSignup: RequestHandler = async (req, res) => {
       });
     }
 
+    // hashing password
+    const salt = await bcrypt.genSalt(10);
+    userData.password = await bcrypt.hash(userData.password, salt);
+
     // creating new user
     const [newUser] = await createUser(
       userData.name,
@@ -62,7 +62,64 @@ export const userSignup: RequestHandler = async (req, res) => {
 };
 
 export const userLogin: RequestHandler = async (req, res) => {
-  res.json({
-    msg: "Login",
-  });
+  const result = loginSchema.safeParse(req.body)
+
+  if (!result.success) {
+    return res.status(400).json({
+      success: false,
+      data: null,
+      error: error_codes.invalid_request,
+    });
+  }
+
+  const userData = result.data
+
+  try {
+    
+    // returns an array... needed object -> first element of the array
+    const [currentUser] = await findUserByEmail(userData.email)
+
+    //user existence
+    if (!currentUser) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        error: error_codes.invalid_credentials,
+      });
+    }
+
+    const matchingPass = await bcrypt.compare(userData.password, currentUser.password)
+
+    if (!matchingPass) {
+      return res.status(401).json({
+        success: false,
+        data: null,
+        error: error_codes.invalid_credentials,
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        id: currentUser.id,
+        role: currentUser.role
+      },
+      process.env.JWT_SECRET as string,
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN as string
+      } as SignOptions
+
+    )
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        token: token
+      },
+      error: null,
+    });
+
+
+  } catch (error) {
+    return res.status(500).send("Internal Server Error");
+  }
 };
